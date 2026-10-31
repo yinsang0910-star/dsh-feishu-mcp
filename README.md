@@ -7,15 +7,18 @@
 真源码、长连接机器人、卡片网关、四步安装向导都在那边。这个仓库是打包产物，
 由主仓库的 `scripts/publish-mcp-repo.ps1` 单向同步生成，**请勿直接在此提交代码**。
 
-## 跑
+## 装
 
-单文件自包含（SDK 和 core 都打进去了，不需要装依赖）：
+**Claude Desktop**：从 [Releases](https://github.com/yinsang0910-star/dsh-feishu-mcp/releases) 下载
+`dsh-feishu-mcp.mcpb`，双击安装，在配置面板填 App ID 与 App Secret。
+
+**其他 stdio 客户端**（Cursor / Cline / DSH / 自己写的）：
 
 ```bash
 npx github:yinsang0910-star/dsh-feishu-mcp
 ```
 
-需要两个环境变量：
+单文件自包含（SDK 和 core 都打进去了，不需要装依赖）。需要两个环境变量：
 
 ```bash
 export FEISHU_APP_ID=cli_xxxxxxxx
