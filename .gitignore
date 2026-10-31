@@ -2,3 +2,5 @@ node_modules/
 *.map
 *.log
 .DS_Store
+# .mcpb 是给 Claude Desktop 装的二进制产物，走 GitHub Release，不进 git
+*.mcpb
