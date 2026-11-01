@@ -1,7 +1,7 @@
 {
   "name": "dsh-feishu-mcp",
   "version": "0.1.0",
-  "description": "飞书 / Lark MCP server：25 个工具，能真发文件进会话、读上下文、停下来等人拍板",
+  "description": "飞书 / Lark MCP server：36 个工具，能真发文件进会话、读上下文、停下来等人拍板",
   "type": "module",
   "bin": {
     "dsh-feishu-mcp": "./dsh-feishu-mcp.mjs"

@@ -36888,6 +36888,98 @@ var FeishuClient = class {
   async recallMessage(messageId) {
     await this.request("DELETE", `/im/v1/messages/${encodeURIComponent(messageId)}`);
   }
+  /** 转发一条消息到别的会话（原文原样，不经过模型重写） */
+  async forwardMessage(messageId, receiveId, receiveIdType = "chat_id") {
+    const data = await this.request("POST", `/im/v1/messages/${encodeURIComponent(messageId)}/forward`, { query: { receive_id_type: receiveIdType }, body: { receive_id: receiveId } });
+    return {
+      messageId: String(data["message_id"] ?? ""),
+      chatId: String(data["chat_id"] ?? ""),
+      msgType: "forward"
+    };
+  }
+  /** 置顶一条消息 */
+  async pinMessage(messageId) {
+    await this.request("POST", "/im/v1/pins", { body: { message_id: messageId } });
+  }
+  /** 取消置顶 */
+  async unpinMessage(messageId) {
+    await this.request("DELETE", `/im/v1/pins/${encodeURIComponent(messageId)}`);
+  }
+  /** 改群信息：群名 / 描述 / 公告之外的基础设置 */
+  async updateChat(chatId, patch) {
+    const body = {};
+    if (patch.name !== void 0)
+      body["name"] = patch.name;
+    if (patch.description !== void 0)
+      body["description"] = patch.description;
+    if (patch.addMemberPermission !== void 0) {
+      body["add_member_permission"] = patch.addMemberPermission;
+    }
+    if (patch.shareCardPermission !== void 0) {
+      body["share_card_permission"] = patch.shareCardPermission;
+    }
+    if (patch.atAllPermission !== void 0)
+      body["at_all_permission"] = patch.atAllPermission;
+    if (!Object.keys(body).length)
+      return;
+    await this.request("PATCH", `/im/v1/chats/${encodeURIComponent(chatId)}`, { body });
+  }
+  /** 建群 */
+  async createChat(name, description = "", userIds = []) {
+    const body = { name, description };
+    if (userIds.length) {
+      body["user_id_list"] = userIds;
+    }
+    const data = await this.request("POST", "/im/v1/chats", {
+      query: { user_id_type: "open_id" },
+      body
+    });
+    return { chatId: String(data["chat_id"] ?? "") };
+  }
+  /** 解散群（不可撤销，机器人必须是群主） */
+  async dissolveChat(chatId) {
+    await this.request("DELETE", `/im/v1/chats/${encodeURIComponent(chatId)}`);
+  }
+  /** 删云空间里的文件/文档（不是消息附件——附件用 recallMessage 删消息） */
+  async deleteDriveFile(fileToken, type = "file") {
+    await this.request("DELETE", `/drive/v1/files/${encodeURIComponent(fileToken)}`, {
+      query: { type }
+    });
+  }
+  /**
+   * 列群里发过的文件（群「文件」标签页的等价物）。
+   *
+   * 飞书没有「群文件列表」这个端点，文件是挂在消息上的，只能翻消息再筛。
+   */
+  async listChatFiles(chatId, opts = {}) {
+    const pages = Math.max(1, Math.min(20, opts.pages ?? 3));
+    const pageSize = Math.max(1, Math.min(50, opts.pageSize ?? 50));
+    const out = [];
+    let pageToken;
+    for (let i = 0; i < pages; i++) {
+      const page = await this.listMessages(chatId, { pageSize, pageToken, sort: "desc" });
+      for (const m of page.items) {
+        if (m.msgType !== "file" && m.msgType !== "media" && m.msgType !== "audio")
+          continue;
+        const c = m.content ?? {};
+        const name = String(c["file_name"] ?? "");
+        if (opts.keyword && !name.includes(opts.keyword))
+          continue;
+        out.push({
+          messageId: m.messageId,
+          fileKey: String(c["file_key"] ?? ""),
+          fileName: name,
+          bytes: Number(c["file_size"] ?? 0),
+          createTime: m.createTime,
+          senderId: m.senderId
+        });
+      }
+      if (!page.hasMore || !page.pageToken)
+        break;
+      pageToken = page.pageToken;
+    }
+    return out;
+  }
   // ───────────────────────── 上传并发送 ─────────────────────────
   /** 上传任意文件到 IM（file_type=stream），返回 file_key */
   async uploadFile(filePath, fileName) {
@@ -38990,6 +39082,40 @@ function registerBitableTools(server, ctx) {
     }
   );
   server.registerTool(
+    "feishu_bitable_delete",
+    {
+      title: "\u5220\u9664\u591A\u7EF4\u8868\u683C\u8BB0\u5F55",
+      description: "\u6309 record_id \u5220\u6389\u4E00\u6761\u8BB0\u5F55\u3002**\u4E0D\u53EF\u64A4\u9500**\uFF1A\u5220\u4E86\u5C31\u6CA1\u4E86\uFF0C\u6CA1\u6709\u56DE\u6536\u7AD9\u3002record_id \u5FC5\u987B\u5148\u901A\u8FC7 feishu_bitable_records \u67E5\u5230\uFF0C\u522B\u81EA\u5DF1\u7F16\u3002\u4E00\u6B21\u53EA\u80FD\u5220\u4E00\u6761\uFF0C\u8981\u5220\u591A\u6761\u5C31\u591A\u6B21\u8C03\u7528\u3002\u5982\u679C\u7528\u6237\u53EA\u662F\u60F3\u6539\u72B6\u6001\uFF08\u6BD4\u5982\u6539\u6210\u300C\u5DF2\u5B8C\u6210\u300D\uFF09\uFF0C\u7528 feishu_bitable_update\uFF0C\u522B\u5220\u3002",
+      inputSchema: {
+        app_token: external_exports.string().min(1).describe("\u591A\u7EF4\u8868\u683C\u7684 app_token\uFF08Base \u94FE\u63A5\u91CC /base/ \u540E\u9762\u90A3\u4E32\uFF09"),
+        table_id: external_exports.string().min(1).describe("\u8BB0\u5F55\u6240\u5728\u7684\u6570\u636E\u8868 id\uFF08\u5F62\u5982 tbliz1PrMZkp1DSN\uFF09"),
+        record_id: external_exports.string().min(1).describe("\u8981\u5220\u9664\u7684\u8BB0\u5F55 id\uFF08rec \u5F00\u5934\uFF09\u3002\u5148\u7528 feishu_bitable_records \u67E5\u51FA\u6765\uFF0C\u522B\u731C\u3002"),
+        confirm: external_exports.literal(true).describe("\u5FC5\u987B\u4F20 true \u8868\u793A\u786E\u8BA4\u5220\u9664\u3002\u8FD9\u662F\u9632\u624B\u6ED1\uFF1A\u5220\u8BB0\u5F55\u4E0D\u53EF\u6062\u590D\u3002")
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true }
+    },
+    async ({ app_token, table_id, record_id }) => {
+      try {
+        const appToken = app_token.trim();
+        const tableId = table_id.trim();
+        const recordId = record_id.trim();
+        if (!recordId.startsWith("rec")) {
+          return fail(
+            `record_id \u770B\u7740\u4E0D\u50CF\u8BB0\u5F55 id\uFF08\u5E94\u5F62\u5982 recxxxxxxxx\uFF09\uFF1A${recordId}\u3002\u5148\u7528 feishu_bitable_records \u67E5\u51FA\u6765\u518D\u5220\u3002`
+          );
+        }
+        await ctx.client.deleteBitableRecord(appToken, tableId, recordId);
+        return ok(`\u5DF2\u5220\u9664\u8BB0\u5F55 ${recordId}\uFF08\u8868 ${tableId}\uFF09\u3002`, {
+          app_token: appToken,
+          table_id: tableId,
+          record_id: recordId
+        });
+      } catch (err) {
+        return fail(describeError5(err, "\u5220\u9664\u8BB0\u5F55"));
+      }
+    }
+  );
+  server.registerTool(
     "feishu_sheet_create",
     {
       title: "\u65B0\u5EFA\u7535\u5B50\u8868\u683C",
@@ -39039,6 +39165,233 @@ function registerBitableTools(server, ctx) {
   );
 }
 
+// packages/mcp/src/tools/chat.ts
+function describeError6(err, action) {
+  if (err instanceof FeishuApiError) {
+    if (err.isPermission) {
+      const scopes = err.missingScopes.join(", ") || "(\u98DE\u4E66\u6CA1\u5728\u9519\u8BEF\u91CC\u8FD4\u56DE\u5177\u4F53 scope)";
+      return `${action}\u5931\u8D25\uFF1A\u6743\u9650\u4E0D\u8DB3\uFF0C\u9700\u8981\u5728\u5F00\u653E\u5E73\u53F0\u7ED9\u5E94\u7528\u5F00\u901A\u6743\u9650\uFF1A${scopes}
+\uFF08\u539F\u59CB\u9519\u8BEF\uFF1Acode=${err.code} ${err.message}\uFF09`;
+    }
+    return `${action}\u5931\u8D25\uFF1Acode=${err.code} ${err.message}`;
+  }
+  return `${action}\u5931\u8D25\uFF1A${err instanceof Error ? err.message : String(err)}`;
+}
+var chatIdSchema = external_exports.string().describe("\u7FA4 id\uFF08oc_ \u5F00\u5934\uFF09\u3002");
+function registerChatTools(server, ctx) {
+  server.registerTool(
+    "feishu_recall",
+    {
+      title: "\u64A4\u56DE\u4E00\u6761\u6D88\u606F",
+      description: "\u64A4\u56DE\u673A\u5668\u4EBA\u81EA\u5DF1\u53D1\u51FA\u53BB\u7684\u6D88\u606F\uFF08\u98DE\u4E66\u53EA\u5141\u8BB8\u64A4\u56DE 24 \u5C0F\u65F6\u5185\u7684\u3001\u4E14\u53EA\u80FD\u64A4\u56DE\u81EA\u5DF1\u53D1\u7684\uFF09\u3002\u4E5F\u7528\u4E8E\u300C\u5220\u6389\u7FA4\u91CC\u90A3\u4E2A\u65E7\u6587\u4EF6\u300D\u2014\u2014\u6587\u4EF6\u662F\u6302\u5728\u6D88\u606F\u4E0A\u7684\uFF0C\u5220\u4E86\u6D88\u606F\u6587\u4EF6\u5C31\u4E00\u8D77\u6CA1\u4E86\u3002\u4E0D\u662F\u81EA\u5DF1\u53D1\u7684\u6D88\u606F\u4F1A\u5931\u8D25\uFF0C\u8FD9\u4E0D\u662F\u6743\u9650\u95EE\u9898\u800C\u662F\u98DE\u4E66\u89C4\u5219\u3002",
+      inputSchema: {
+        message_id: external_exports.string().describe("\u8981\u64A4\u56DE\u7684\u6D88\u606F id\uFF08om_ \u5F00\u5934\uFF09\u3002")
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true }
+    },
+    async ({ message_id }) => {
+      try {
+        if (!message_id.trim()) return fail("message_id \u4E3A\u7A7A\uFF1A\u8BF7\u7ED9\u51FA\u8981\u64A4\u56DE\u7684\u6D88\u606F id\u3002");
+        await ctx.client.recallMessage(message_id.trim());
+        ctx.log("feishu_recall \u5B8C\u6210", { message_id });
+        return ok(`\u5DF2\u64A4\u56DE\u6D88\u606F ${message_id}`, { message_id });
+      } catch (err) {
+        return fail(describeError6(err, "\u64A4\u56DE"));
+      }
+    }
+  );
+  server.registerTool(
+    "feishu_forward",
+    {
+      title: "\u8F6C\u53D1\u4E00\u6761\u6D88\u606F\u5230\u522B\u7684\u4F1A\u8BDD",
+      description: "\u628A\u67D0\u6761\u6D88\u606F\u539F\u6837\u8F6C\u53D1\u5230\u53E6\u4E00\u4E2A\u7FA4\u6216\u67D0\u4E2A\u4EBA\uFF08\u4E0D\u7ECF\u8FC7\u6539\u5199\uFF0C\u5361\u7247/\u56FE\u7247/\u6587\u4EF6\u90FD\u4FDD\u6301\u539F\u6837\uFF09\u3002\u9002\u5408\uFF1A\u628A\u7ED3\u679C\u540C\u6B65\u7ED9\u53E6\u4E00\u4E2A\u7FA4\u3001\u628A\u7528\u6237\u53D1\u7684\u56FE\u8F6C\u7ED9\u8D1F\u8D23\u4EBA\u3002",
+      inputSchema: {
+        message_id: external_exports.string().describe("\u8981\u8F6C\u53D1\u7684\u6D88\u606F id\uFF08om_ \u5F00\u5934\uFF09\u3002"),
+        to: external_exports.string().describe("\u8F6C\u53D1\u76EE\u6807\uFF1Achat_id\uFF08oc_\uFF09\u6216 open_id\uFF08ou_\uFF09\u3002"),
+        to_type: external_exports.enum(["chat_id", "open_id", "email"]).optional().describe("\u76EE\u6807\u7C7B\u578B\uFF0C\u9ED8\u8BA4 chat_id\u3002")
+      },
+      annotations: { readOnlyHint: false, openWorldHint: true }
+    },
+    async ({ message_id, to, to_type }) => {
+      try {
+        const sent = await ctx.client.forwardMessage(message_id.trim(), to.trim(), to_type ?? "chat_id");
+        return ok(`\u5DF2\u8F6C\u53D1\uFF08\u65B0\u6D88\u606F=${sent.messageId || "(\u672A\u8FD4\u56DE id)"}\uFF09`, {
+          message_id: sent.messageId,
+          chat_id: sent.chatId
+        });
+      } catch (err) {
+        return fail(describeError6(err, "\u8F6C\u53D1"));
+      }
+    }
+  );
+  server.registerTool(
+    "feishu_pin",
+    {
+      title: "\u7F6E\u9876 / \u53D6\u6D88\u7F6E\u9876\u4E00\u6761\u6D88\u606F",
+      description: "\u628A\u4E00\u6761\u6D88\u606F\u9489\u5728\u7FA4\u9876\u90E8\uFF08\u516C\u544A\u6027\u8D28\u7684\u5173\u952E\u7ED3\u8BBA\uFF09\uFF0C\u6216\u53D6\u6D88\u7F6E\u9876\u3002\u9002\u5408\uFF1A\u628A\u6700\u7EC8\u7ED3\u8BBA\u3001\u89C4\u8303\u6587\u4EF6\u3001\u957F\u671F\u6709\u6548\u7684\u6E05\u5355\u9489\u4F4F\u3002",
+      inputSchema: {
+        message_id: external_exports.string().describe("\u6D88\u606F id\uFF08om_ \u5F00\u5934\uFF09\u3002"),
+        unpin: external_exports.boolean().optional().describe("true \u8868\u793A\u53D6\u6D88\u7F6E\u9876\uFF0C\u9ED8\u8BA4 false\uFF08\u7F6E\u9876\uFF09\u3002")
+      },
+      annotations: { readOnlyHint: false, openWorldHint: true }
+    },
+    async ({ message_id, unpin }) => {
+      try {
+        if (unpin) {
+          await ctx.client.unpinMessage(message_id.trim());
+          return ok(`\u5DF2\u53D6\u6D88\u7F6E\u9876 ${message_id}`, { message_id, pinned: false });
+        }
+        await ctx.client.pinMessage(message_id.trim());
+        return ok(`\u5DF2\u7F6E\u9876 ${message_id}`, { message_id, pinned: true });
+      } catch (err) {
+        return fail(describeError6(err, unpin ? "\u53D6\u6D88\u7F6E\u9876" : "\u7F6E\u9876"));
+      }
+    }
+  );
+  server.registerTool(
+    "feishu_chat_update",
+    {
+      title: "\u6539\u7FA4\u4FE1\u606F\uFF08\u7FA4\u540D / \u63CF\u8FF0 / \u8C01\u80FD\u62C9\u4EBA\uFF09",
+      description: "\u6539\u7FA4\u540D\u3001\u7FA4\u63CF\u8FF0\uFF0C\u6216\u8C03\u6574\u300C\u8C01\u80FD\u9080\u8BF7\u6210\u5458 / \u8C01\u80FD\u5206\u4EAB\u7FA4\u540D\u7247 / \u8C01\u80FD @\u6240\u6709\u4EBA\u300D\u3002\u53EA\u4F20\u8981\u6539\u7684\u5B57\u6BB5\uFF0C\u5176\u5B83\u4FDD\u6301\u4E0D\u52A8\u3002",
+      inputSchema: {
+        chat_id: chatIdSchema,
+        name: external_exports.string().optional().describe("\u65B0\u7FA4\u540D\u3002"),
+        description: external_exports.string().optional().describe("\u65B0\u7FA4\u63CF\u8FF0\u3002"),
+        add_member_permission: external_exports.enum(["all_members", "only_owner"]).optional().describe("\u8C01\u80FD\u62C9\u4EBA\u8FDB\u7FA4\u3002"),
+        share_card_permission: external_exports.enum(["allowed", "not_allowed"]).optional().describe("\u7FA4\u6210\u5458\u80FD\u5426\u5206\u4EAB\u7FA4\u540D\u7247\u3002"),
+        at_all_permission: external_exports.enum(["all_members", "only_owner"]).optional().describe("\u8C01\u80FD @\u6240\u6709\u4EBA\u3002")
+      },
+      annotations: { readOnlyHint: false, openWorldHint: true }
+    },
+    async ({ chat_id, name, description, add_member_permission, share_card_permission, at_all_permission }) => {
+      try {
+        await ctx.client.updateChat(chat_id.trim(), {
+          ...name !== void 0 ? { name } : {},
+          ...description !== void 0 ? { description } : {},
+          ...add_member_permission ? { addMemberPermission: add_member_permission } : {},
+          ...share_card_permission ? { shareCardPermission: share_card_permission } : {},
+          ...at_all_permission ? { atAllPermission: at_all_permission } : {}
+        });
+        return ok(`\u5DF2\u66F4\u65B0\u7FA4 ${chat_id}`, { chat_id });
+      } catch (err) {
+        return fail(describeError6(err, "\u6539\u7FA4\u4FE1\u606F"));
+      }
+    }
+  );
+  server.registerTool(
+    "feishu_chat_create",
+    {
+      title: "\u5EFA\u4E00\u4E2A\u7FA4",
+      description: "\u65B0\u5EFA\u7FA4\u5E76\u628A\u6307\u5B9A\u7684\u4EBA\u62C9\u8FDB\u6765\u3002\u673A\u5668\u4EBA\u5EFA\u5B8C\u5C31\u662F\u7FA4\u4E3B\uFF0C\u540E\u7EED\u80FD\u6539\u7FA4\u540D\u3001\u53D1\u6D88\u606F\u3001\u7F6E\u9876\u3002\u6210\u5458\u8981\u7528 open_id\uFF08ou_ \u5F00\u5934\uFF09\uFF1B\u4E0D\u786E\u5B9A id \u5148\u7528 feishu_user_lookup \u67E5\u3002",
+      inputSchema: {
+        name: external_exports.string().describe("\u7FA4\u540D\u3002"),
+        description: external_exports.string().optional().describe("\u7FA4\u63CF\u8FF0\u3002"),
+        member_open_ids: external_exports.array(external_exports.string()).optional().describe("\u521D\u59CB\u6210\u5458 open_id \u5217\u8868\uFF08ou_ \u5F00\u5934\uFF09\u3002\u53EF\u4EE5\u4E0D\u4F20\uFF0C\u5EFA\u7A7A\u7FA4\u3002")
+      },
+      annotations: { readOnlyHint: false, openWorldHint: true }
+    },
+    async ({ name, description, member_open_ids }) => {
+      try {
+        const { chatId } = await ctx.client.createChat(name, description ?? "", member_open_ids ?? []);
+        return ok(`\u5DF2\u5EFA\u7FA4\u300C${name}\u300D\uFF08${chatId}\uFF09`, { chat_id: chatId });
+      } catch (err) {
+        return fail(describeError6(err, "\u5EFA\u7FA4"));
+      }
+    }
+  );
+  server.registerTool(
+    "feishu_chat_dissolve",
+    {
+      title: "\u89E3\u6563\u4E00\u4E2A\u7FA4",
+      description: "\u89E3\u6563\u7FA4\u3002**\u4E0D\u53EF\u64A4\u9500**\uFF1A\u7FA4\u548C\u7FA4\u91CC\u7684\u6D88\u606F\u90FD\u4F1A\u6D88\u5931\uFF0C\u673A\u5668\u4EBA\u5FC5\u987B\u662F\u7FA4\u4E3B\u3002\u6267\u884C\u524D\u5148\u8DDF\u4EBA\u786E\u8BA4\u4E00\u904D\u7FA4\u540D\u548C\u7FA4 id\u3002",
+      inputSchema: {
+        chat_id: chatIdSchema,
+        confirm: external_exports.string().describe("\u628A\u7FA4\u540D\u539F\u6837\u6284\u4E00\u904D\u4F5C\u4E3A\u786E\u8BA4\uFF08\u9632\u6B62\u624B\u6ED1\u5220\u9519\u7FA4\uFF09\u3002")
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true }
+    },
+    async ({ chat_id, confirm }) => {
+      try {
+        const chats = await ctx.client.listChats({ pageSize: 100 });
+        const target = chats.find((c) => c.chatId === chat_id.trim());
+        if (!target) return fail(`\u6CA1\u627E\u5230\u7FA4 ${chat_id}\uFF1A\u673A\u5668\u4EBA\u53EF\u80FD\u4E0D\u5728\u8FD9\u4E2A\u7FA4\u91CC\u3002`);
+        if ((target.name ?? "") !== confirm.trim()) {
+          return fail(
+            `\u786E\u8BA4\u4E0D\u5339\u914D\uFF1A\u7FA4 ${chat_id} \u7684\u540D\u5B57\u662F\u300C${target.name}\u300D\uFF0C\u4F60\u5199\u7684\u662F\u300C${confirm}\u300D\u3002\u8981\u89E3\u6563\u8BF7\u628A\u7FA4\u540D\u539F\u6837\u6284\u4E00\u904D\u3002`
+          );
+        }
+        await ctx.client.dissolveChat(chat_id.trim());
+        return ok(`\u5DF2\u89E3\u6563\u7FA4\u300C${target.name}\u300D\uFF08${chat_id}\uFF09`, { chat_id, name: target.name });
+      } catch (err) {
+        return fail(describeError6(err, "\u89E3\u6563\u7FA4"));
+      }
+    }
+  );
+  server.registerTool(
+    "feishu_chat_files",
+    {
+      title: "\u5217\u7FA4\u91CC\u53D1\u8FC7\u7684\u6587\u4EF6",
+      description: "\u5217\u51FA\u7FA4\u91CC\u53D1\u8FC7\u7684\u6587\u4EF6\uFF08\u5BF9\u5E94\u98DE\u4E66\u7FA4\u804A\u9876\u90E8\u7684\u300C\u6587\u4EF6\u300D\u6807\u7B7E\u9875\uFF09\uFF0C\u5E26\u6D88\u606F id\u3001\u6587\u4EF6\u540D\u3001\u5927\u5C0F\u3001\u53D1\u9001\u65F6\u95F4\u3002\u98DE\u4E66\u6CA1\u6709\u72EC\u7ACB\u7684\u300C\u7FA4\u6587\u4EF6\u5217\u8868\u300D\u63A5\u53E3\uFF0C\u6587\u4EF6\u662F\u6302\u5728\u6D88\u606F\u4E0A\u7684\uFF0C\u6240\u4EE5\u8FD9\u91CC\u7FFB\u6700\u8FD1\u7684\u7FA4\u6D88\u606F\u518D\u7B5B\u51FA\u6765\u3002\u8981\u5220\u67D0\u4E2A\u6587\u4EF6\uFF1A\u62FF\u8FD9\u91CC\u7684 message_id \u53BB\u8C03 feishu_recall\u3002",
+      inputSchema: {
+        chat_id: chatIdSchema,
+        keyword: external_exports.string().optional().describe("\u53EA\u7559\u6587\u4EF6\u540D\u542B\u8FD9\u4E2A\u8BCD\u7684\uFF08\u6A21\u7CCA\u5339\u914D\uFF09\u3002"),
+        pages: external_exports.number().int().min(1).max(20).optional().describe("\u7FFB\u591A\u5C11\u9875\u6D88\u606F\uFF0C\u9ED8\u8BA4 3\u3002"),
+        page_size: external_exports.number().int().min(1).max(50).optional().describe("\u6BCF\u9875\u6761\u6570\uFF0C\u9ED8\u8BA4 50\u3002")
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true }
+    },
+    async ({ chat_id, keyword, pages, page_size }) => {
+      try {
+        const files = await ctx.client.listChatFiles(chat_id.trim(), {
+          ...keyword ? { keyword } : {},
+          ...pages ? { pages } : {},
+          ...page_size ? { pageSize: page_size } : {}
+        });
+        if (!files.length) {
+          return ok(
+            `\u6700\u8FD1\u8FD9\u4E9B\u6D88\u606F\u91CC\u6CA1\u627E\u5230${keyword ? `\u542B\u300C${keyword}\u300D\u7684` : ""}\u6587\u4EF6\u3002\uFF08\u53EA\u7FFB\u4E86\u6700\u8FD1 ${pages ?? 3} \u9875\uFF1B\u6587\u4EF6\u66F4\u65E9\u7684\u8BDD\u628A pages \u8C03\u5927\u3002\uFF09`,
+            { chat_id, files: [] }
+          );
+        }
+        const lines = files.map((f, i) => {
+          const when = new Date(Number(f.createTime) || 0).toISOString().slice(0, 16).replace("T", " ");
+          const size = f.bytes ? `${(f.bytes / 1024).toFixed(0)}KB` : "?";
+          return `${i + 1}. ${f.fileName || "(\u65E0\u540D)"} \xB7 ${size} \xB7 ${when} \xB7 ${f.messageId}`;
+        });
+        return ok(
+          `\u7FA4\u91CC\u6700\u8FD1\u6709 ${files.length} \u4E2A\u6587\u4EF6\uFF1A
+${lines.join("\n")}
+
+\u8981\u5220\u5176\u4E2D\u67D0\u4E2A\uFF0C\u7528\u5B83\u7684 message_id \u8C03 feishu_recall\u3002`,
+          { chat_id, files }
+        );
+      } catch (err) {
+        return fail(describeError6(err, "\u5217\u7FA4\u6587\u4EF6"));
+      }
+    }
+  );
+  server.registerTool(
+    "feishu_file_delete",
+    {
+      title: "\u5220\u4E91\u7A7A\u95F4\u91CC\u7684\u6587\u4EF6\uFF08\u4E0D\u662F\u7FA4\u6D88\u606F\u9644\u4EF6\uFF09",
+      description: "\u5220\u9664\u4E91\u7A7A\u95F4\uFF08\u6211\u7684\u7A7A\u95F4/\u5171\u4EAB\u7A7A\u95F4\uFF09\u91CC\u7684\u6587\u4EF6\u3001\u6587\u6863\u3001\u8868\u683C\u3001\u591A\u7EF4\u8868\u683C\u6216\u7A7A\u6587\u4EF6\u5939\u3002**\u6CE8\u610F**\uFF1A\u7FA4\u804A\u91CC\u53D1\u7684\u6587\u4EF6\u662F\u6D88\u606F\u9644\u4EF6\uFF0C\u90A3\u4E2A\u7528 feishu_recall \u5220\u6D88\u606F\uFF1B\u8FD9\u91CC\u7684 file_token \u662F\u4E91\u6587\u6863\u4F53\u7CFB\u91CC\u7684 token\uFF08\u6765\u81EA feishu_drive_list\uFF09\uFF0C\u4E24\u8005\u4E0D\u901A\u7528\u3002",
+      inputSchema: {
+        file_token: external_exports.string().describe("\u4E91\u7A7A\u95F4\u6587\u4EF6\u7684 token\uFF08\u6765\u81EA feishu_drive_list\uFF09\u3002"),
+        type: external_exports.enum(["file", "docx", "doc", "sheet", "bitable", "folder", "mindnote", "slides"]).optional().describe("\u6587\u4EF6\u7C7B\u578B\uFF0C\u9ED8\u8BA4 file\u3002\u6587\u4EF6\u5939\u8981\u5220\u5FC5\u987B\u5148\u6E05\u7A7A\u3002")
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true }
+    },
+    async ({ file_token, type }) => {
+      try {
+        await ctx.client.deleteDriveFile(file_token.trim(), type ?? "file");
+        return ok(`\u5DF2\u5220\u9664\u4E91\u7A7A\u95F4\u6587\u4EF6 ${file_token}`, { file_token, type: type ?? "file" });
+      } catch (err) {
+        return fail(describeError6(err, "\u5220\u6587\u4EF6"));
+      }
+    }
+  );
+}
+
 // packages/mcp/src/tools/docs.ts
 var DRIVE_MAX_PAGE_SIZE = 200;
 var WIKI_MAX_PAGE_SIZE = 50;
@@ -39069,7 +39422,7 @@ function formatModified(raw) {
   const p = (n) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
-function describeError6(err, action, permissionHint) {
+function describeError7(err, action, permissionHint) {
   if (err instanceof FeishuApiError) {
     if (err.isPermission) {
       const scopes = err.missingScopes.join(", ") || "(\u98DE\u4E66\u6CA1\u5728\u9519\u8BEF\u91CC\u8FD4\u56DE\u5177\u4F53 scope)";
@@ -39087,6 +39440,36 @@ function clampLimit2(raw, fallback, max) {
   const n = Math.trunc(raw);
   if (n < 1) return 1;
   return n > max ? max : n;
+}
+function extractBlockText(block) {
+  const pick2 = (node2) => {
+    if (!node2 || typeof node2 !== "object") return "";
+    const obj = node2;
+    const out = [];
+    const elements = obj.elements;
+    if (Array.isArray(elements)) {
+      for (const el of elements) {
+        if (!el || typeof el !== "object") continue;
+        const e = el;
+        for (const key of ["text_run", "mention_doc", "mention_user", "equation"]) {
+          const run = e[key];
+          if (run && typeof run === "object") {
+            const content = run.content;
+            if (typeof content === "string") out.push(content);
+          }
+        }
+      }
+    }
+    return out.join("");
+  };
+  for (const key of Object.keys(block)) {
+    if (key === "block_id" || key === "block_type" || key === "parent_id" || key === "children") continue;
+    const value = block[key];
+    if (!value || typeof value !== "object") continue;
+    const text = pick2(value);
+    if (text) return text;
+  }
+  return "";
 }
 function registerDocsTools(server, ctx) {
   server.registerTool(
@@ -39146,7 +39529,7 @@ function registerDocsTools(server, ctx) {
         });
       } catch (err) {
         return fail(
-          describeError6(
+          describeError7(
             err,
             "\u5217\u4E91\u7A7A\u95F4\u6587\u4EF6",
             "\u9700\u8981\u5728\u5F00\u653E\u5E73\u53F0\u7ED9\u5E94\u7528\u5F00\u901A\u4E91\u7A7A\u95F4\u6743\u9650\uFF08\u5982 drive:drive \u6216 drive:drive.metadata:readonly\uFF09\uFF0C\u5E76\u628A\u76EE\u6807\u6587\u4EF6\u5939\u5171\u4EAB\u7ED9\u8BE5\u5E94\u7528\uFF0C\u7136\u540E\u91CD\u65B0\u53D1\u5E03\u7248\u672C\u3002"
@@ -39199,7 +39582,7 @@ function registerDocsTools(server, ctx) {
         });
       } catch (err) {
         return fail(
-          describeError6(
+          describeError7(
             err,
             "\u8BFB\u6587\u6863\u6B63\u6587",
             "\u5E94\u7528\u6709 docs:doc \u4F46\u6CA1\u6709 docx:document:readonly\uFF0C\u8BFB\u5DF2\u6709\u6587\u6863\u4F1A\u88AB\u62D2\u3002\u9700\u8981\u5728\u5F00\u653E\u5E73\u53F0\u5F00\u901A docx:document\uFF08\u542B\u53EA\u8BFB\u6743\u9650\uFF09\u5E76**\u91CD\u65B0\u53D1\u5E03\u7248\u672C**\uFF0C\u4E4B\u540E\u518D\u7528\u672C\u5DE5\u5177\u3002"
@@ -39240,7 +39623,7 @@ document_id=${documentId || "(\u98DE\u4E66\u6CA1\u8FD4\u56DE document_id)"}
         );
       } catch (err) {
         return fail(
-          describeError6(
+          describeError7(
             err,
             "\u65B0\u5EFA\u6587\u6863",
             "\u5F53\u524D\u5E94\u7528\u7F3A\u5C11 docx:document:create\u3002\u9700\u8981\u5728\u5F00\u653E\u5E73\u53F0\u5F00\u901A\u8BE5\u6743\u9650\u5E76**\u91CD\u65B0\u53D1\u5E03\u7248\u672C**\uFF0C\u5426\u5219\u6BCF\u6B21\u8C03\u7528\u90FD\u4F1A 99991672\u3002"
@@ -39296,7 +39679,7 @@ document_id=${documentId || "(\u98DE\u4E66\u6CA1\u8FD4\u56DE document_id)"}
         });
       } catch (err) {
         return fail(
-          describeError6(
+          describeError7(
             err,
             "\u5217\u77E5\u8BC6\u5E93\u7A7A\u95F4",
             "\u9700\u8981\u5728\u5F00\u653E\u5E73\u53F0\u5F00\u901A\u77E5\u8BC6\u5E93\u6743\u9650\uFF08\u5982 wiki:wiki \u6216 wiki:wiki:readonly\uFF09\uFF0C\u5E76\u628A\u5E94\u7528\u52A0\u5165\u5BF9\u5E94\u77E5\u8BC6\u5E93\uFF0C\u7136\u540E\u91CD\u65B0\u53D1\u5E03\u7248\u672C\u3002"
@@ -39385,10 +39768,117 @@ document_id=${documentId || "(\u98DE\u4E66\u6CA1\u8FD4\u56DE document_id)"}
         });
       } catch (err) {
         return fail(
-          describeError6(
+          describeError7(
             err,
             "\u67E5\u77E5\u8BC6\u5E93\u8282\u70B9",
             "\u9700\u8981\u5728\u5F00\u653E\u5E73\u53F0\u5F00\u901A\u77E5\u8BC6\u5E93\u6743\u9650\uFF08\u5982 wiki:wiki \u6216 wiki:wiki:readonly\uFF09\uFF0C\u5E76\u786E\u8BA4\u5E94\u7528\u5DF2\u88AB\u52A0\u5165\u8BE5\u77E5\u8BC6\u5E93\uFF0C\u7136\u540E\u91CD\u65B0\u53D1\u5E03\u7248\u672C\u3002"
+          )
+        );
+      }
+    }
+  );
+  server.registerTool(
+    "feishu_sheet_read",
+    {
+      title: "\u8BFB\u7535\u5B50\u8868\u683C\u5355\u5143\u683C",
+      description: "\u6309 A1 \u533A\u95F4\u8BFB\u4E00\u4E2A\u7535\u5B50\u8868\u683C\u7684\u503C\uFF0C\u8FD4\u56DE\u4E8C\u7EF4\u6570\u7EC4\uFF08\u884C \xD7 \u5217\uFF09\u3002\u533A\u95F4\u5199\u6CD5\uFF1ASheet1!A1:D20\uFF08\u5E26\u8868\u540D\u66F4\u7A33\uFF09\uFF0C\u6216 A1:D20\uFF08\u9ED8\u8BA4\u7B2C\u4E00\u4E2A\u5DE5\u4F5C\u8868\uFF09\u3002\u8BFB\u6574\u5217\u53EF\u4EE5\u7528 Sheet1!A:A\u3002\u53EA\u80FD\u8BFB\u503C\u548C\u516C\u5F0F\u7ED3\u679C\uFF0C\u8BFB\u4E0D\u5230\u6837\u5F0F\u3001\u6279\u6CE8\u3001\u5408\u5E76\u5355\u5143\u683C\u4FE1\u606F\u3002\u914D\u5408 feishu_sheet_create \u65B0\u5EFA\u8868\uFF1B\u5199\u5165\u76EE\u524D\u6CA1\u6709\u5F00\u653E\uFF08\u98DE\u4E66\u7684\u5199\u5165\u63A5\u53E3\u8981\u6C42\u5148\u62FF\u5230 sheet_id\uFF0C\u9700\u8981\u5148\u8BFB\u4E00\u6B21\u62FF\u5143\u6570\u636E\uFF0C\u6682\u672A\u652F\u6301\uFF09\u3002",
+      inputSchema: {
+        spreadsheet_token: external_exports.string().min(1).describe("\u7535\u5B50\u8868\u683C\u7684 token\uFF08sheet \u94FE\u63A5\u91CC /sheets/ \u540E\u9762\u90A3\u4E32\uFF09"),
+        range: external_exports.string().min(1).describe('A1 \u533A\u95F4\uFF0C\u5982 "Sheet1!A1:D20" \u6216 "A1:D20"\uFF1B\u6574\u5217\u5199 "Sheet1!A:A"')
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true }
+    },
+    async ({ spreadsheet_token, range }) => {
+      try {
+        const token = spreadsheet_token.trim();
+        const rng = range.trim();
+        const res = await ctx.client.readSheetValues(token, rng);
+        const rows = Array.isArray(res.values) ? res.values : [];
+        if (!rows.length) {
+          return ok(`\u533A\u95F4 ${res.range || rng} \u662F\u7A7A\u7684\uFF08\u6CA1\u6709\u4EFB\u4F55\u503C\uFF09\u3002`, {
+            spreadsheet_token: token,
+            range: res.range || rng,
+            rows: 0
+          });
+        }
+        const lines = [
+          `\u533A\u95F4 ${res.range || rng}\uFF1A\u5171 ${rows.length} \u884C`,
+          "",
+          ...rows.slice(0, 60).map((row, i) => {
+            const cells = (Array.isArray(row) ? row : []).map(
+              (c) => c === null || c === void 0 ? "" : String(c)
+            );
+            return `${i + 1}\uFF5C${cells.join(" \uFF5C ")}`;
+          })
+        ];
+        if (rows.length > 60) lines.push(`\uFF08\u53EA\u5217\u4E86\u524D 60 \u884C\uFF0C\u5171 ${rows.length} \u884C\uFF09`);
+        return ok(lines.join("\n"), {
+          spreadsheet_token: token,
+          range: res.range || rng,
+          rows: rows.length,
+          values: rows.slice(0, 200)
+        });
+      } catch (err) {
+        return fail(
+          describeError7(
+            err,
+            "\u8BFB\u7535\u5B50\u8868\u683C",
+            "\u9700\u8981\u5728\u5F00\u653E\u5E73\u53F0\u5F00\u901A\u8868\u683C\u6743\u9650\uFF08\u5982 sheets:spreadsheet:readonly \u6216 sheets:spreadsheet\uFF09\uFF0C\u5E76\u786E\u8BA4\u5E94\u7528\u5BF9\u8BE5\u8868\u683C\u6709\u8BBF\u95EE\u6743\u9650\uFF08\u6587\u6863\u9700\u8981\u5171\u4EAB\u7ED9\u5E94\u7528\u6216\u653E\u5728\u5E94\u7528\u53EF\u8BBF\u95EE\u7684\u7A7A\u95F4\uFF09\u3002"
+          )
+        );
+      }
+    }
+  );
+  server.registerTool(
+    "feishu_doc_blocks",
+    {
+      title: "\u8BFB\u6587\u6863\u7ED3\u6784\u5316\u5757",
+      description: "\u6309\u5757\uFF08block\uFF09\u8BFB\u4E00\u7BC7\u4E91\u6587\u6863\u7684\u7ED3\u6784\uFF1A\u6BCF\u5757\u6709 block_id\u3001block_type \u4E0E\u5185\u5BB9\u3002\u548C feishu_doc_read \u7684\u533A\u522B\uFF1Adoc_read \u7ED9\u7684\u662F\u62FC\u63A5\u597D\u7684\u7EAF\u6587\u672C\uFF0C\u9002\u5408\u901A\u8BFB\uFF1Bdoc_blocks \u4FDD\u7559\u6BB5\u843D/\u6807\u9898/\u8868\u683C/\u56FE\u7247\u5757\u7684\u5206\u5757\u7ED3\u6784\uFF0C\u9002\u5408\u5B9A\u4F4D\u300C\u7B2C\u51E0\u6BB5\u300D\u300C\u54EA\u4E2A\u8868\u683C\u300D\u4EE5\u53CA\u540E\u7EED\u6309 block_id \u505A\u7CBE\u7EC6\u64CD\u4F5C\u3002\u98DE\u4E66\u6587\u6863\u7684\u5757\u7C7B\u578B\u662F\u6570\u5B57\u7F16\u7801\uFF08\u5982 2=\u6587\u672C\u30013-11=\u5404\u7EA7\u6807\u9898\u300131=\u8868\u683C\uFF09\uFF0C\u672C\u5DE5\u5177\u4F1A\u628A\u80FD\u8BC6\u522B\u7684\u6587\u5B57\u5185\u5BB9\u62BD\u51FA\u6765\uFF0C\u8BC6\u522B\u4E0D\u4E86\u7684\u5757\u53EA\u7ED9\u7C7B\u578B\u7801\u3002",
+      inputSchema: {
+        document_id: external_exports.string().min(1).describe("\u6587\u6863 id\uFF08docx \u94FE\u63A5\u91CC /docx/ \u540E\u9762\u90A3\u4E32\uFF0C\u4E0D\u662F\u6574\u4E2A URL\uFF09"),
+        page_size: external_exports.number().int().min(1).max(500).optional().describe("\u6BCF\u9875\u5757\u6570\uFF0C\u9ED8\u8BA4 200\uFF0C\u6700\u5927 500"),
+        max_pages: external_exports.number().int().min(1).max(10).optional().describe("\u6700\u591A\u7FFB\u51E0\u9875\uFF0C\u9ED8\u8BA4 3\uFF08\u9632\u6B62\u8D85\u5927\u6587\u6863\u4E00\u6B21\u62C9\u7206\uFF09")
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true }
+    },
+    async ({ document_id, page_size, max_pages }) => {
+      try {
+        const docId = document_id.trim();
+        const size = page_size ?? 200;
+        const pages = max_pages ?? 3;
+        const items = [];
+        let pageToken;
+        let hasMore = false;
+        for (let i = 0; i < pages; i += 1) {
+          const res = await ctx.client.listDocumentBlocks(docId, {
+            pageSize: size,
+            pageToken
+          });
+          items.push(...res.items ?? []);
+          hasMore = res.hasMore;
+          pageToken = res.pageToken;
+          if (!hasMore || !pageToken) break;
+        }
+        if (!items.length) return ok(`\u6587\u6863 ${docId} \u6CA1\u6709\u4EFB\u4F55\u5757\uFF08\u53EF\u80FD\u662F\u7A7A\u6587\u6863\uFF09\u3002`, { blocks: 0 });
+        const lines = [`\u6587\u6863 ${docId}\uFF1A\u5171\u53D6\u5230 ${items.length} \u4E2A\u5757${hasMore ? "\uFF08\u8FD8\u6709\u66F4\u591A\u9875\uFF09" : ""}`, ""];
+        for (const b of items.slice(0, 120)) {
+          const type = Number(b.block_type ?? 0);
+          const text = extractBlockText(b);
+          lines.push(text ? `${type}\uFF5C${text}` : `${type}\uFF5C(\u65E0\u6587\u5B57\u5185\u5BB9)`);
+        }
+        if (items.length > 120) lines.push(`\uFF08\u53EA\u5217\u4E86\u524D 120 \u5757\uFF0C\u5171 ${items.length} \u5757\uFF09`);
+        return ok(lines.join("\n"), {
+          document_id: docId,
+          blocks: items.length,
+          has_more: hasMore,
+          items: items.slice(0, 200)
+        });
+      } catch (err) {
+        return fail(
+          describeError7(
+            err,
+            "\u8BFB\u6587\u6863\u5757",
+            "\u9700\u8981\u5728\u5F00\u653E\u5E73\u53F0\u5F00\u901A\u6587\u6863\u6743\u9650\uFF08\u5982 docx:document:readonly \u6216 docx:document\uFF09\uFF0C\u5E76\u786E\u8BA4\u5E94\u7528\u5BF9\u8BE5\u6587\u6863\u6709\u8BBF\u95EE\u6743\u9650\u3002"
           )
         );
       }
@@ -39476,7 +39966,7 @@ document_id=${documentId || "(\u98DE\u4E66\u6CA1\u8FD4\u56DE document_id)"}
         });
       } catch (err) {
         return fail(
-          describeError6(
+          describeError7(
             err,
             "\u67E5\u7528\u6237",
             "\u9700\u8981\u5728\u5F00\u653E\u5E73\u53F0\u5F00\u901A\u901A\u8BAF\u5F55\u6743\u9650\uFF08\u5982 contact:user.id:readonly / contact:user.base:readonly\uFF09\uFF0C\u5E76\u786E\u8BA4\u76EE\u6807\u7528\u6237\u5728\u5E94\u7528\u53EF\u89C1\u8303\u56F4\u5185\uFF0C\u7136\u540E\u91CD\u65B0\u53D1\u5E03\u7248\u672C\u3002"
@@ -39537,6 +40027,7 @@ function registerAllTools(server, ctx) {
   registerFileTools(server, ctx);
   registerContextTools(server, ctx);
   registerDirectoryTools(server, ctx);
+  registerChatTools(server, ctx);
   registerBitableTools(server, ctx);
   registerDocsTools(server, ctx);
 }
@@ -39548,21 +40039,43 @@ function log(msg, extra) {
   process.stderr.write(`[dsh-feishu-mcp] ${line}
 `);
 }
+function missingCredentials(reason) {
+  const fail2 = () => {
+    throw new Error(`\u98DE\u4E66\u51ED\u636E\u672A\u914D\u7F6E\uFF1A${reason}`);
+  };
+  const proxy = () => new Proxy({}, {
+    get(_target, prop) {
+      if (typeof prop === "symbol" || prop === "then" || prop === "toJSON") return void 0;
+      return fail2();
+    },
+    has: () => false
+  });
+  return { config: proxy(), client: proxy() };
+}
 async function main() {
   let config2;
+  let client;
+  let ready = true;
+  let reason = "";
   try {
     config2 = loadConfig();
+    client = createClient();
   } catch (err) {
-    log(`\u914D\u7F6E\u52A0\u8F7D\u5931\u8D25\uFF1A${err instanceof Error ? err.message : String(err)}`);
-    process.exit(2);
+    reason = err instanceof Error ? err.message : String(err);
+    ready = false;
+    log(`\u914D\u7F6E\u4E0D\u5B8C\u6574\uFF0C\u4ECD\u4F1A\u542F\u52A8\uFF1A${reason}`);
+    ({ config: config2, client } = missingCredentials(reason));
   }
-  const client = createClient();
   const ctx = { client, config: config2, log };
   const server = new McpServer({ name: "dsh-feishu", version: VERSION });
   registerAllTools(server, ctx);
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  log(`ready \xB7 app=${config2.appId} \xB7 default_chat=${config2.defaultChatId ?? "(\u672A\u8BBE\u7F6E)"}`);
+  if (ready) {
+    log(`ready \xB7 app=${config2.appId} \xB7 default_chat=${config2.defaultChatId ?? "(\u672A\u8BBE\u7F6E)"}`);
+  } else {
+    log("ready\uFF08\u672A\u914D\u7F6E\u51ED\u636E\uFF0C\u5DE5\u5177\u8C03\u7528\u4F1A\u8FD4\u56DE\u914D\u7F6E\u9519\u8BEF\uFF09");
+  }
 }
 for (const sig of ["SIGINT", "SIGTERM"]) {
   process.on(sig, () => {
